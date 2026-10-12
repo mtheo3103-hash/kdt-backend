@@ -17,9 +17,9 @@ mongoose.connect(mongoUri)
     .then(() => console.log('✅ MongoDB verbunden'))
     .catch(err => console.error('❌ MongoDB Fehler:', err));
 
-// --- SCHEMAS ---
+// Schemas mit Nutzer-ID Isolierung
 const UserSchema = new mongoose.Schema({
-    userId: { type: String, required: true, unique: true }, // Eindeutige Nutzer-ID (z.B. Timestamp-basiert oder random String)
+    userId: { type: String, required: true, unique: true },
     username: { type: String, unique: true, required: true },
     password: { type: String, required: true },
     githubToken: { type: String, default: '' },
@@ -27,9 +27,8 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// Projekt-Schema: Ordnet das Projekt eindeutig der userId zu
 const ProjectSchema = new mongoose.Schema({
-    userId: { type: String, required: true }, // Die ID des Nutzers (z.B. "171829384")
+    userId: { type: String, required: true },
     name: { type: String, required: true },
     type: { type: String, enum: ['addon', 'repo'], required: true },
     data: { type: Object, required: true },
@@ -37,7 +36,6 @@ const ProjectSchema = new mongoose.Schema({
 });
 const Project = mongoose.model('Project', ProjectSchema);
 
-// Middleware zur Authentifizierung
 const verifyToken = (req, res, next) => {
     const token = req.headers['authorization']?.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'Kein Token' });
@@ -49,25 +47,17 @@ const verifyToken = (req, res, next) => {
     }
 };
 
-// --- AUTH ROUTES ---
+// Auth Routes
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
         const hashedPassword = await bcrypt.hash(password, 10);
-        
-        // Generiere eine eindeutige numerische oder alphanumerische Nutzer-ID (z.B. 9-stelliger Zufallscode)
         const customUserId = Math.floor(100000000 + Math.random() * 900000000).toString();
 
-        const newUser = new User({
-            userId: customUserId,
-            username,
-            password: hashedPassword
-        });
-
-        await newUser.save();
+        await new User({ userId: customUserId, username, password: hashedPassword }).save();
         res.json({ message: 'Registrierung erfolgreich!', userId: customUserId });
     } catch (err) {
-        res.status(400).json({ error: 'Benutzername existiert bereits oder ungültig.' });
+        res.status(400).json({ error: 'Benutzername existiert bereits.' });
     }
 });
 
@@ -78,7 +68,6 @@ app.post('/api/login', async (req, res) => {
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(400).json({ error: 'Ungültige Anmeldedaten' });
         }
-        
         const token = jwt.sign({ id: user._id, userId: user.userId, username: user.username }, process.env.JWT_SECRET, { expiresIn: '7d' });
         res.json({ token, username: user.username, userId: user.userId, githubRepo: user.githubRepo });
     } catch (err) {
@@ -96,10 +85,9 @@ app.post('/api/settings', verifyToken, async (req, res) => {
     }
 });
 
-// --- PROJECT ROUTES (Nutzer-getrennter Bereich) ---
+// Project Routes (Nutzer-Isolierung)
 app.get('/api/projects', verifyToken, async (req, res) => {
     try {
-        // Holt nur die Projekte, die exakt zu dieser userId gehören
         const projects = await Project.find({ userId: req.user.userId });
         res.json(projects);
     } catch (err) {
@@ -110,25 +98,24 @@ app.get('/api/projects', verifyToken, async (req, res) => {
 app.post('/api/projects', verifyToken, async (req, res) => {
     try {
         const { name, type, data } = req.body;
-        // Speichert das Projekt im Bereich des Nutzers (userId/projects)
         const project = await Project.findOneAndUpdate(
             { userId: req.user.userId, name, type },
             { data, updatedAt: Date.now() },
             { upsert: true, new: true }
         );
-        res.json({ message: `Projekt in ${req.user.userId}/projects/ gespeichert!`, project });
+        res.json({ message: `Projekt in Bereich ${req.user.userId}/projects gespeichert!`, project });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- GITHUB PUBLISH ROUTE ---
+// GitHub Publish Route
 app.post('/api/publish-github', verifyToken, async (req, res) => {
     try {
         const { files } = req.body;
         const user = await User.findById(req.user.id);
         if (!user.githubToken || !user.githubRepo) {
-            return res.status(400).json({ error: 'GitHub Token in den Einstellungen fehlt!' });
+            return res.status(400).json({ error: 'GitHub Token fehlt in den Einstellungen!' });
         }
 
         const [owner, repo] = user.githubRepo.split('/');
@@ -142,7 +129,7 @@ app.post('/api/publish-github', verifyToken, async (req, res) => {
             } catch (e) {}
 
             await axios.put(`https://api.github.com/repos/${owner}/${repo}/contents/${file.path}`, {
-                message: `KDT Auto-Publish [User: ${user.userId}]: ${file.path}`,
+                message: `KDT Auto-Publish [ID: ${user.userId}]: ${file.path}`,
                 content: Buffer.from(file.content).toString('base64'),
                 sha: sha
             }, { headers });
@@ -155,6 +142,4 @@ app.post('/api/publish-github', verifyToken, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 KDT Server läuft auf Port ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server läuft auf Port ${PORT}`));
